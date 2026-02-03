@@ -1,0 +1,44 @@
+import machine
+import time
+import M5
+
+# Initialize Display 
+M5.begin()
+M5.Display.setRotation(1)
+M5.Display.fillScreen(0x000000)
+M5.Display.setTextColor(0x00FF00)
+M5.Display.drawString("SNIFFER V4: THE TRUTH", 10, 10)
+
+# --- HARDWARE PIN DEFINITIONS ---
+row_selector = [machine.Pin(8, machine.Pin.OUT), 
+                machine.Pin(9, machine.Pin.OUT), 
+                machine.Pin(11, machine.Pin.OUT)]
+
+# Column pins: 13, 15, 3, 4, 5, 6, 7
+col_pins = [machine.Pin(p, machine.Pin.IN, machine.Pin.PULL_UP) 
+            for p in [13, 15, 3, 4, 5, 6, 7]]
+
+def set_row(row_num):
+    row_selector[0].value(row_num & 0x01)
+    row_selector[1].value((row_num >> 1) & 0x01)
+    row_selector[2].value((row_num >> 2) & 0x01)
+
+M5.Display.drawString("Scanning 3, 4, 5, 6...", 10, 40)
+
+while True:
+    for r in range(8):
+        set_row(r)
+        time.sleep_ms(5) # Extra settle time for the Rebel decoder
+        for c, pin in enumerate(col_pins):
+            if pin.value() == 0: 
+                # Clear coordinate display area
+                M5.Display.fillRect(0, 60, 240, 60, 0x000000)
+                # Display raw data
+                out_str = f"R:{r} C:{c} (Pin:{[13,15,3,4,5,6,7][c]})"
+                M5.Display.drawString(out_str, 20, 80)
+                
+                # Terminal output for easy copy-pasting
+                print(f"HW_MAP:({r},{c})")
+                
+                time.sleep(0.4) # Longer debounce for clear reads
+    time.sleep(0.01)
