@@ -1,0 +1,81 @@
+import machine
+import time
+import M5
+
+M5.begin()
+M5.Display.setRotation(1)
+M5.Display.fillScreen(0x000000)
+M5.Display.setTextColor(0x00FF00)
+M5.Display.setTextSize(2)
+
+# Hardware Pins
+row_selector = [machine.Pin(8, machine.Pin.OUT), 
+                machine.Pin(9, machine.Pin.OUT), 
+                machine.Pin(11, machine.Pin.OUT)]
+col_pins = [machine.Pin(p, machine.Pin.IN, machine.Pin.PULL_UP) 
+            for p in [13, 15, 3, 4, 5, 6, 7]]
+
+# Master Rebel Dictionary
+REBEL_MAP = {
+    (7,0): '`', (3,0): '1', (7,1): '2', (3,1): '3', (7,2): '4', (3,2): '5', (7,3): '6',
+    (3,3): '7', (7,4): '8', (3,4): '9', (7,5): '0', (3,5): '-', (7,6): '=', (3,6): 'BKSP',
+    (6,0): '\t', (2,0): 'q', (6,1): 'w', (2,1): 'e', (6,2): 'r', (2,2): 't', (6,3): 'y',
+    (2,3): 'u', (6,4): 'i', (2,4): 'o', (6,5): 'p', (2,5): '[', (6,6): ']', (2,6): '\\',
+    (5,1): 'a', (1,1): 's', (5,2): 'd', (1,2): 'f', (5,3): 'g', (1,3): 'h', (5,4): 'j',
+    (1,4): 'k', (5,5): 'l', (1,5): ';', (5,6): "'", (1,6): '\n',
+    (0,1): 'z', (4,2): 'x', (0,2): 'c', (4,3): 'v', (0,3): 'b', (4,4): 'n', (0,4): 'm',
+    (4,5): ',', (0,5): '.', (4,6): '/', (0,6): ' '
+}
+
+# Shift Layer Dictionary
+SHIFT_MAP = {
+    '1':'!', '2':'@', '3':'#', '4':'$', '5':'%', '6':'^', '7':'&', '8':'*', '9':'(', '0':')',
+    '-':'_', '=':'+', '[':'{', ']':'}', '\\':'|', ';':':', "'":'"', ',':'<', '.':'>', '/':"?"
+}
+
+message = ""
+shift_active = False
+
+def set_row(row_num):
+    row_selector[0].value(row_num & 0x01)
+    row_selector[1].value((row_num >> 1) & 0x01)
+    row_selector[2].value((row_num >> 2) & 0x01)
+
+def refresh():
+    M5.Display.fillScreen(0x000000)
+    M5.Display.drawString("SANCTUARY V4", 10, 10)
+    cursor = "_" if (time.ticks_ms() // 500) % 2 == 0 else " "
+    M5.Display.drawString("> " + message[-16:] + cursor, 10, 60)
+
+refresh()
+print("--- Sanctuary Terminal Online ---")
+
+while True:
+    for r in range(8):
+        set_row(r)
+        time.sleep_ms(2) # Stabilize Rebel Decoder
+        for c, pin in enumerate(col_pins):
+            if pin.value() == 0:
+                coords = (r, c)
+                # Handle Modifiers first
+                if coords == (1,0): # Blue Key (SHIFT)
+                    shift_active = True
+                    continue
+                
+                char = REBEL_MAP.get(coords)
+                if char:
+                    if char == 'BKSP':
+                        message = message[:-1]
+                    elif char == '\n':
+                        print(f"EXEC: {message}")
+                        message = ""
+                    else:
+                        if shift_active:
+                            char = SHIFT_MAP.get(char, char.upper())
+                        message += char
+                    
+                    refresh()
+                    shift_active = False # Reset shift after one char
+                    time.sleep(0.3)
+    time.sleep(0.01)
+    if (time.ticks_ms() % 1000) < 20: refresh() # Pulse cursor
