@@ -1,0 +1,126 @@
+import M5, time, random, machine, gc
+from hardware import *
+
+# --- 1. REBEL HARDWARE ---
+row_pins = [machine.Pin(8, machine.Pin.OUT), machine.Pin(9, machine.Pin.OUT), machine.Pin(11, machine.Pin.OUT)]
+col_pins = [machine.Pin(p, machine.Pin.IN, machine.Pin.PULL_UP) for p in [13, 15, 3, 4, 5, 6, 7]]
+buzzer = machine.PWM(machine.Pin(43), freq=440, duty=0)
+
+def set_row(num):
+    row_pins[0].value(num & 0x01); row_pins[1].value((num >> 1) & 0x01); row_pins[2].value((num >> 2) & 0x01)
+
+def play_tone(freq, duration):
+    buzzer.freq(freq)
+    buzzer.duty(50)
+    time.sleep(duration)
+    buzzer.duty(0)
+
+M5.begin()
+M5.Display.setRotation(1)
+
+# --- 2. GAME LOGIC ---
+def run_game():
+    px, py = 120, 60
+    facing = "UP"
+    bullets, obstacles, particles = [], [], []
+    pellet_x, pellet_y = random.randint(10, 220), random.randint(10, 110)
+    score = 0
+    lives = 3
+
+    while lives > 0:
+        M5.Display.clear()
+        gc.collect() 
+        
+        M5.Display.drawCircle(pellet_x, pellet_y, 4, 0xFFE0)
+        M5.Display.drawString(f"DATA: {score}  LIVES: {lives}", 5, 5)
+        
+        if random.random() < 0.03 and len(obstacles) < 6:
+            side = random.choice([0, 230])
+            obstacles.append({"x": side, "y": random.randint(10, 120), "dx": 2 if side == 0 else -2})
+
+        # Matrix Scan
+        for r in range(8):
+            set_row(r)
+            for c, pin in enumerate(col_pins):
+                if pin.value() == 0:
+                    if r == 1 and c == 5: py -= 5; facing = "UP"
+                    elif r == 4 and c == 5: px -= 5; facing = "LEFT"
+                    elif r == 0 and c == 5: py += 5; facing = "DOWN"
+                    elif r == 4 and c == 6: px += 5; facing = "RIGHT"
+                    elif r == 0 and c == 6: # FIRE
+                        play_tone(880, 0.02)
+                        bdx, bdy = (0,-10) if facing=="UP" else (0,10) if facing=="DOWN" else (-10,0) if facing=="LEFT" else (10,0)
+                        bullets.append({"x": px+4, "y": py+4, "dx": bdx, "dy": bdy})
+                        time.sleep(0.12)
+
+        # Particle Logic with Color Decay
+        for p in particles[:]:
+            p["x"] += p["dx"]; p["y"] += p["dy"]; p["life"] -= 1
+            # White -> Yellow -> Red decay
+            color = 0xFFFF if p["life"] > 7 else 0xFFE0 if p["life"] > 3 else 0xF800
+            M5.Display.drawPixel(int(p["x"]), int(p["y"]), color)
+            if p["life"] <= 0: particles.remove(p)
+
+        # Obstacle Logic
+        for o in obstacles[:]:
+            o["x"] += o["dx"]
+            M5.Display.fillRect(int(o["x"]), int(o["y"]), 12, 12, 0xF800)
+            if abs(px - o["x"]) < 10 and abs(py - o["y"]) < 10:
+                play_tone(100, 0.2) # Hit sound
+                lives -= 1
+                obstacles.clear()
+                px, py = 120, 60 # Reset position
+                time.sleep(0.5)
+                break 
+            if o["x"] < -20 or o["x"] > 260: obstacles.remove(o)
+
+        # Bullet Logic
+        for b in bullets[:]:
+            b["x"] += b["dx"]; b["y"] += b["dy"]
+            M5.Display.drawPixel(int(b["x"]), int(b["y"]), 0xFFFF)
+            
+            for o in obstacles[:]:
+                if (o["x"] < b["x"] < o["x"] + 12) and (o["y"] < b["y"] < o["y"] + 12):
+                    play_tone(440, 0.05) # Blast sound
+                    for _ in range(8):
+                        particles.append({"x": b["x"], "y": b["y"], "dx": random.randint(-4,4), "dy": random.randint(-4,4), "life": 10})
+                    if o in obstacles: obstacles.remove(o)
+                    if b in bullets: bullets.remove(b)
+                    break
+            
+            if b["x"] < 0 or b["x"] > 240 or b["y"] < 0 or b["y"] > 135:
+                if b in bullets: bullets.remove(b)
+
+        # Render Arrow
+        c = 0x07E0
+        if facing == "UP": M5.Display.fillTriangle(px, py+8, px+4, py, px+8, py+8, c)
+        elif facing == "DOWN": M5.Display.fillTriangle(px, py, px+4, py+8, px+8, py, c)
+        elif facing == "LEFT": M5.Display.fillTriangle(px+8, py, px, py+4, px+8, py+8, c)
+        elif facing == "RIGHT": M5.Display.fillTriangle(px, py, px+8, py+4, px, py+8, c)
+        
+        # Screen Wrap
+        if px < 0: px = 240
+        elif px > 240: px = 0
+        if py < 0: py = 135
+        elif py > 135: py = 0
+        time.sleep(0.01)
+
+    return score # Final score on Game Over
+
+# --- 3. THE PERSISTENT WRAPPER ---
+while True:
+    final_score = run_game()
+    M5.Display.fillScreen(0x0000)
+    M5.Display.setTextColor(0xF800)
+    M5.Display.drawString("SYSTEM OVERRIDE: FAIL", 45, 40)
+    M5.Display.setTextColor(0xFFFF)
+    M5.Display.drawString(f"FINAL SCORE: {final_score}", 75, 65)
+    M5.Display.drawString("HOLD SPACE TO REBOOT SYSTEM", 35, 95)
+    
+    waiting = True
+    while waiting:
+        set_row(0)
+        if col_pins[6].value() == 0: # Space (0,6)
+            waiting = False
+            play_tone(1200, 0.1)
+            time.sleep(0.5)
