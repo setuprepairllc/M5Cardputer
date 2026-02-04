@@ -1,0 +1,117 @@
+import machine, time, M5, network, socket, gc
+
+# --- 1. SAFE BOOT DELAY ---
+# Allows you to stop the script before the serial port becomes unresponsive
+M5.begin()
+M5.Display.setRotation(1)
+M5.Display.fillScreen(0x0000)
+for i in range(5, 0, -1):
+    M5.Display.drawString(f"SAFE BOOT: {i}s", 10, 10)
+    time.sleep(1)
+    M5.Display.fillScreen(0x0000)
+
+# --- 2. REBEL MATRIX & COLORS ---
+KEYBOARD_MAP = {
+    (7,0): '`', (3,0): '1', (7,1): '2', (3,1): '3', (7,2): '4', (3,2): '5', (7,3): '6',
+    (3,3): '7', (7,4): '8', (3,4): '9', (7,5): '0', (3,5): '-', (7,6): '=', (3,6): 'BKSP',
+    (6,0): '\t', (2,0): 'q', (6,1): 'w', (2,1): 'e', (6,2): 'r', (2,2): 't', (6,3): 'y',
+    (2,3): 'u', (6,4): 'i', (2,4): 'o', (6,5): 'p', (2,5): '[', (6,6): ']', (2,6): '\\',
+    (5,0): '\x1b', (1,0): 'SHFT', (5,1): 'a', (1,1): 's', (5,2): 'd', (1,2): 'f', (5,3): 'g',
+    (1,3): 'h', (5,4): 'j', (1,4): 'k', (5,5): 'l', (1,5): ';', (5,6): "'", (1,6): '\n',
+    (4,0): 'OPT', (0,0): 'ALT', (4,1): 'SYM', (0,1): 'z', (4,2): 'x', (0,2): 'c', (4,3): 'v',
+    (0,3): 'b', (4,4): 'n', (0,4): 'm', (4,5): ',', (0,5): '.', (4,6): '/', (0,6): ' '
+}
+
+ANSI_COLORS = {
+    0: 0x0000, 1: 0x8000, 2: 0x0400, 3: 0x8400, 4: 0x0010, 5: 0x8010, 6: 0x0410, 7: 0xC618,
+    8: 0x8410, 9: 0xF800, 10: 0x07E0, 11: 0xFFE0, 12: 0x001F, 13: 0xF81F, 14: 0x07FF, 15: 0xFFFF
+}
+
+# --- 3. STATE ENGINE ---
+x, y = 0, 0
+CHAR_W, CHAR_H = 6, 10
+curr_fg = 0x07E0
+STATE_GROUND, STATE_ESC, STATE_CSI, STATE_TELNET = 0, 1, 2, 3
+curr_state = STATE_GROUND
+ansi_buf = ""
+
+row_pins = [machine.Pin(8, machine.Pin.OUT), machine.Pin(9, machine.Pin.OUT), machine.Pin(11, machine.Pin.OUT)]
+col_pins = [machine.Pin(p, machine.Pin.IN, machine.Pin.PULL_UP) for p in [13, 15, 3, 4, 5, 6, 7]]
+
+def set_row(num):
+    row_pins[0].value(num & 0x01); row_pins[1].value((num >> 1) & 0x01); row_pins[2].value((num >> 2) & 0x01)
+
+def handle_csi(buf):
+    global x, y, curr_fg
+    cmd = buf[-1]
+    params = buf[:-1].replace('[','').split(';')
+    if cmd == 'm':
+        for p in params:
+            v = int(p) if p else 0
+            if v == 0: curr_fg = 0x07E0
+            elif 30 <= v <= 37: curr_fg = ANSI_COLORS[v-30]
+            elif 90 <= v <= 97: curr_fg = ANSI_COLORS[v-82]
+    elif cmd == 'J':
+        M5.Display.fillScreen(0x0000); x, y = 0, 0
+    elif cmd in ['H', 'f']:
+        try:
+            r = int(params[0]) if params[0] else 1
+            c = int(params[1]) if len(params) > 1 and params[1] else 1
+            y, x = (r-1)*CHAR_H, (c-1)*CHAR_W
+        except: pass
+
+# --- 4. TERMINAL EXECUTION ---
+def run_bbs():
+    global curr_state, x, y, ansi_buf, curr_fg
+    wlan = network.WLAN(network.STA_IF)
+    wlan.active(True)
+    wlan.connect("corp.setup.repair", "c2145153534@")
+    
+    while not wlan.isconnected(): time.sleep(0.1)
+    
+    s = socket.socket()
+    s.settimeout(0.2)
+    try:
+        s.connect(("absinthebbs.net", 1940))
+        s.send(bytes([255, 251, 1, 255, 251, 3]))
+        s.setblocking(False)
+    except: pass
+
+    M5.Display.fillScreen(0x0000)
+
+    while True:
+        gc.collect()
+        try:
+            data = s.recv(512)
+            for b in data:
+                if b == 255: curr_state = STATE_TELNET; continue
+                if curr_state == STATE_TELNET: curr_state = STATE_GROUND; continue
+                if b == 27: curr_state = STATE_ESC; continue
+                if curr_state == STATE_ESC:
+                    if b == 91: curr_state = STATE_CSI; ansi_buf = ""
+                    else: curr_state = STATE_GROUND
+                    continue
+                if curr_state == STATE_CSI:
+                    ansi_buf += chr(b)
+                    if 64 <= b <= 126: handle_csi(ansi_buf); curr_state = STATE_GROUND
+                    continue
+                
+                if b in [10, 13]: x = 0; y += CHAR_H
+                elif 32 <= b <= 126:
+                    M5.Display.drawString(chr(b), x, y, curr_fg)
+                    x += CHAR_W
+                    if x > 230: x = 0; y += CHAR_H
+            if y > 125: y = 0; M5.Display.fillScreen(0x0000)
+        except: pass
+
+        for r in range(8):
+            set_row(r)
+            for c, pin in enumerate(col_pins):
+                if pin.value() == 0:
+                    k = KEYBOARD_MAP.get((r, c))
+                    if k:
+                        s.send(k if k != '\n' else '\r\n')
+                        time.sleep(0.2)
+        time.sleep(0.005) # Yield to system for Serial/USB stability
+
+run_bbs()
