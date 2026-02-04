@@ -1,16 +1,35 @@
-import machine, time, M5, network, socket, gc
+import machine, time, M5, network, socket, gc, os
 
-# --- 1. SAFE BOOT DELAY ---
-# Allows you to stop the script before the serial port becomes unresponsive
+# 1. OPTIMIZE CLOCK & MEMORY
+machine.freq(240000000)
+gc.enable()
+
+# 2. SILENCE SERIAL FEEDBACK
+# This detaches the REPL from the data stream to prevent buffer overflow
+def detach_serial():
+    try: os.dupterm(None, 1)
+    except: pass
+
+def attach_serial():
+    # This function brings the REPL back so you can debug again
+    try:
+        from machine import UART
+        os.dupterm(UART(0, 115200), 1)
+        print("\n[REPL ATTACHED]")
+    except: pass
+
 M5.begin()
 M5.Display.setRotation(1)
 M5.Display.fillScreen(0x0000)
-for i in range(5, 0, -1):
-    M5.Display.drawString(f"SAFE BOOT: {i}s", 10, 10)
-    time.sleep(1)
-    M5.Display.fillScreen(0x0000)
 
-# --- 2. REBEL MATRIX & COLORS ---
+# Safe Boot Window
+for i in range(3, 0, -1):
+    M5.Display.drawString(f"SERIAL LOCK IN: {i}s", 10, 10)
+    time.sleep(1)
+
+detach_serial() # Lock the port now to prevent the 'Dragon' from crashing it
+
+# --- 3. REBEL MATRIX & COLORS ---
 KEYBOARD_MAP = {
     (7,0): '`', (3,0): '1', (7,1): '2', (3,1): '3', (7,2): '4', (3,2): '5', (7,3): '6',
     (3,3): '7', (7,4): '8', (3,4): '9', (7,5): '0', (3,5): '-', (7,6): '=', (3,6): 'BKSP',
@@ -27,9 +46,8 @@ ANSI_COLORS = {
     8: 0x8410, 9: 0xF800, 10: 0x07E0, 11: 0xFFE0, 12: 0x001F, 13: 0xF81F, 14: 0x07FF, 15: 0xFFFF
 }
 
-# --- 3. STATE ENGINE ---
+# --- 4. RENDERER & PARSER ---
 x, y = 0, 0
-CHAR_W, CHAR_H = 6, 10
 curr_fg = 0x07E0
 STATE_GROUND, STATE_ESC, STATE_CSI, STATE_TELNET = 0, 1, 2, 3
 curr_state = STATE_GROUND
@@ -57,20 +75,20 @@ def handle_csi(buf):
         try:
             r = int(params[0]) if params[0] else 1
             c = int(params[1]) if len(params) > 1 and params[1] else 1
-            y, x = (r-1)*CHAR_H, (c-1)*CHAR_W
+            y, x = (r-1)*10, (c-1)*6
         except: pass
 
-# --- 4. TERMINAL EXECUTION ---
+# --- 5. THE TERMINAL LOOP ---
 def run_bbs():
     global curr_state, x, y, ansi_buf, curr_fg
     wlan = network.WLAN(network.STA_IF)
     wlan.active(True)
-    wlan.connect("corp.setup.repair", "c2145153534@")
+    wlan.connect("corp.setup.repair", "d7854395734&")
     
     while not wlan.isconnected(): time.sleep(0.1)
     
     s = socket.socket()
-    s.settimeout(0.2)
+    s.settimeout(0.02)
     try:
         s.connect(("absinthebbs.net", 1940))
         s.send(bytes([255, 251, 1, 255, 251, 3]))
@@ -80,9 +98,8 @@ def run_bbs():
     M5.Display.fillScreen(0x0000)
 
     while True:
-        gc.collect()
         try:
-            data = s.recv(512)
+            data = s.recv(256)
             for b in data:
                 if b == 255: curr_state = STATE_TELNET; continue
                 if curr_state == STATE_TELNET: curr_state = STATE_GROUND; continue
@@ -96,22 +113,29 @@ def run_bbs():
                     if 64 <= b <= 126: handle_csi(ansi_buf); curr_state = STATE_GROUND
                     continue
                 
-                if b in [10, 13]: x = 0; y += CHAR_H
+                if b in [10, 13]: x = 0; y += 10
                 elif 32 <= b <= 126:
                     M5.Display.drawString(chr(b), x, y, curr_fg)
-                    x += CHAR_W
-                    if x > 230: x = 0; y += CHAR_H
+                    x += 6
+                    if x > 230: x = 0; y += 10
             if y > 125: y = 0; M5.Display.fillScreen(0x0000)
         except: pass
 
+        # Input + Panic Logic
         for r in range(8):
             set_row(r)
             for c, pin in enumerate(col_pins):
                 if pin.value() == 0:
                     k = KEYBOARD_MAP.get((r, c))
+                    # --- PANIC EXIT: HOLD ALT + OPT TO REGAIN SERIAL ---
+                    if r == 0 and c == 0: # ALT Pressed
+                        attach_serial()
+                        s.close()
+                        return
                     if k:
                         s.send(k if k != '\n' else '\r\n')
-                        time.sleep(0.2)
-        time.sleep(0.005) # Yield to system for Serial/USB stability
+                        time.sleep(0.15)
+        
+        time.sleep(0.001)
 
 run_bbs()
