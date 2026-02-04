@@ -1,0 +1,27 @@
+import machine, time, M5
+
+M5.begin()
+M5.Display.setRotation(1)
+M5.Display.fillScreen(0x0000)
+
+# Hardware setup for the Rebel Batch
+row_pins = [machine.Pin(8, machine.Pin.OUT), machine.Pin(9, machine.Pin.OUT), machine.Pin(11, machine.Pin.OUT)]
+col_pins = [machine.Pin(p, machine.Pin.IN, machine.Pin.PULL_UP) for p in [13, 15, 3, 4, 5, 6, 7]]
+
+def set_row(num):
+    row_pins[0].value(num & 0x01)
+    row_pins[1].value((num >> 1) & 0x01)
+    row_pins[2].value((num >> 2) & 0x01)
+
+M5.Display.drawString("PRESS ARROWS & SPACE", 10, 10)
+
+while True:
+    for r in range(8):
+        set_row(r)
+        for c, pin in enumerate(col_pins):
+            if pin.value() == 0:
+                M5.Display.fillScreen(0x0000)
+                M5.Display.drawString(f"DETECTED: ({r}, {c})", 10, 50)
+                print(f"Key at: Row {r}, Col {c}")
+                time.sleep(0.3)
+    time.sleep(0.01)
